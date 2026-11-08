@@ -1,0 +1,36 @@
+name: Agnes 9-16 AI Video Generator
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_payload:
+        description: 'JSON Job Payload from Multi-Post Hub'
+        required: true
+        type: string
+
+jobs:
+  render-and-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install FFmpeg & Devanagari Fonts (Nepali/Hindi Support)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-lohit-deva
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests pillow edge-tts
+
+      - name: Generate AI Scenes, Subtitles & Compose 9:16 MP4
+        env:
+          JOB_PAYLOAD: ${{ github.event.inputs.job_payload }}
+          WEBHOOK_SECRET: ${{ secrets.AGNES_WEBHOOK_SECRET }}
+        run: python scripts/runner_compose.py
