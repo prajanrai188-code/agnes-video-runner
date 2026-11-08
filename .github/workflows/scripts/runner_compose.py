@@ -1,5 +1,6 @@
 import os, json, time, hmac, hashlib, subprocess, urllib.parse, requests
 import textwrap
+import random
 from PIL import Image, ImageDraw, ImageFont
 
 payload = json.loads(os.environ["JOB_PAYLOAD"])
@@ -13,6 +14,10 @@ voiceover = payload.get("voiceover", "off")
 topic = payload.get("topic", "").lower()
 callback_url = payload["callback_url"]
 
+# Pexels & Pixabay API Keys
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "b40j3qN3N6N47bE0R9oX3uL3g4D3O9Y1T6A5pC5H8j2T1H9d1H2A6x4C") 
+PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "41503923-b1d7d0a2f4c9c2e5b3c8d1e2f")
+
 os.makedirs("work", exist_ok=True)
 sig = hmac.new(secret.encode(), job_id.encode(), hashlib.sha256).hexdigest()
 
@@ -21,7 +26,7 @@ req_headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36"
 }
 
-# 1. Download a reliable Devanagari font directly if it's missing (To fix Box-Box issue)
+# 1. Download Devanagari font (For Text Overlay)
 font_path = "work/NotoSansDevanagari.ttf"
 if not os.path.exists(font_path):
     font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Bold.ttf"
@@ -32,11 +37,58 @@ if not os.path.exists(font_path):
     except:
         pass
 
+def search_and_download_pexels_video(query, output_path, min_duration=5):
+    """Pexels API बाट 9:16 (Portrait) भिडियो खोज्ने र डाउनलोड गर्ने"""
+    headers = {"Authorization": PEXELS_API_KEY}
+    url = f"https://api.pexels.com/videos/search?query={urllib.parse.quote(query)}&orientation=portrait&per_page=15"
+    
+    try:
+        res = requests.get(url, headers=headers, timeout=20).json()
+        if 'videos' in res and len(res['videos']) > 0:
+            videos = [v for v in res['videos'] if v['duration'] >= min_duration]
+            if not videos: videos = res['videos']
+            
+            selected_video = random.choice(videos)
+            
+            # HD/SD मध्ये राम्रो क्वालिटीको भिडियो छान्ने
+            video_files = selected_video['video_files']
+            hd_files = [f for f in video_files if f['quality'] == 'hd' and f['width'] <= 1080]
+            if not hd_files: hd_files = video_files
+            
+            best_link = sorted(hd_files, key=lambda x: x['width'], reverse=True)[0]['link']
+            
+            video_data = requests.get(best_link, timeout=60)
+            if video_data.status_code == 200:
+                with open(output_path, "wb") as f:
+                    f.write(video_data.content)
+                return True
+    except Exception as e:
+        print(f"Pexels Error: {e}")
+    return False
+
+def search_and_download_pixabay_video(query, output_path):
+    """Pexels ले काम नगरेमा Pixabay बाट भिडियो तान्ने (Fallback)"""
+    url = f"https://pixabay.com/api/videos/?key={PIXABAY_API_KEY}&q={urllib.parse.quote(query)}&video_type=film&per_page=10"
+    try:
+        res = requests.get(url, timeout=20).json()
+        if int(res.get('totalHits', 0)) > 0:
+            selected_video = random.choice(res['hits'])
+            best_link = selected_video['videos']['large']['url'] if selected_video['videos']['large']['size'] > 0 else selected_video['videos']['medium']['url']
+            
+            video_data = requests.get(best_link, timeout=60)
+            if video_data.status_code == 200:
+                with open(output_path, "wb") as f:
+                    f.write(video_data.content)
+                return True
+    except Exception as e:
+        print(f"Pixabay Error: {e}")
+    return False
+
 try:
     if not scenes:
         scenes = [
-            {"image_prompt": f"Vertical 9:16 cinematic scene of {topic}", "narration": payload.get("topic",""), "subtitle": payload.get("topic","")},
-            {"image_prompt": f"Vertical 9:16 dramatic close up of {topic}", "narration": "", "subtitle": payload.get("topic","")}
+            {"search_keyword": "nature landscape", "narration": payload.get("topic",""), "subtitle": payload.get("topic","")},
+            {"search_keyword": "cinematic beautiful", "narration": "", "subtitle": payload.get("topic","")}
         ]
 
     scene_clips = []
@@ -44,49 +96,44 @@ try:
     clip_dur = max(int(duration / num_scenes), 5)
 
     for idx, sc in enumerate(scenes):
-        prompt = sc.get("image_prompt", topic)
+        # AI ले दिएको अङ्ग्रेजी कीवर्ड (जस्तै: "sad rain", "happy walking")
+        search_query = sc.get("search_keyword") or sc.get("image_prompt", "cinematic nature")
         overlay_text = sc.get("subtitle", "") or sc.get("narration", "")
-        img_path = f"work/scene_{idx}.jpg"
+        
+        raw_vid_path = f"work/raw_scene_{idx}.mp4"
         txt_overlay_path = f"work/text_overlay_{idx}.png"
+        clip_path = f"work/clip_{idx}.mp4"
 
-        # १. AI Image डाउनलोड गर्ने
-        img_downloaded = False
-        try:
-            url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=768&height=1152&nologo=true&model=flux&seed={int(time.time())+idx}"
-            r = requests.get(url, headers={"User-Agent": req_headers["User-Agent"]}, timeout=45)
-            if r.status_code == 200 and len(r.content) > 1000:
-                with open(img_path, "wb") as f:
-                    f.write(r.content)
-                img_downloaded = True
-        except Exception as e:
-            pass
+        # १. Pexels वा Pixabay बाट भिडियो तान्ने
+        vid_downloaded = search_and_download_pexels_video(search_query, raw_vid_path, clip_dur)
+        if not vid_downloaded:
+            vid_downloaded = search_and_download_pixabay_video(search_query, raw_vid_path)
 
-        if not img_downloaded:
-            fallback_img = Image.new("RGB", (768, 1152), color=(20, 28, 48))
-            fallback_img.save(img_path)
+        # यदि कतैबाट पनि भिडियो आएन भने, कालो भिडियो बनाएर Fallback गर्ने
+        if not vid_downloaded:
+            subprocess.run([
+                "ffmpeg", "-y", "-f", "lavfi", "-i", f"color=c=black:s=768x1152:d={clip_dur}",
+                "-c:v", "libx264", "-t", str(clip_dur), raw_vid_path
+            ], check=True)
 
         # २. पारदर्शी (Transparent PNG) लेयरमा टेक्स्ट लेख्ने
         txt_img = Image.new('RGBA', (768, 1152), (0, 0, 0, 0))
         draw = ImageDraw.Draw(txt_img)
-
-        try:
-            # Use the downloaded Devanagari font
-            font = ImageFont.truetype(font_path, 52)
-        except Exception:
-            font = ImageFont.load_default()
+        try: font = ImageFont.truetype(font_path, 52)
+        except Exception: font = ImageFont.load_default()
 
         if overlay_text:
             lines = textwrap.wrap(overlay_text, width=22)
             line_height = 75
             y_text = (1152 - (len(lines) * line_height)) // 2
 
+            # टेक्स्टको पछाडि कालो ब्याकग्राउन्ड बक्स
             draw.rectangle([(20, y_text - 30), (748, y_text + (len(lines) * line_height) + 30)], fill=(0, 0, 0, 150))
 
             for line in lines:
                 bbox = font.getbbox(line)
                 line_width = bbox[2] - bbox[0]
                 x_text = (768 - line_width) // 2
-
                 for dx in [-2, 0, 2]:
                     for dy in [-2, 0, 2]:
                         draw.text((x_text+dx, y_text+dy), line, font=font, fill="black")
@@ -95,14 +142,13 @@ try:
                 
         txt_img.save(txt_overlay_path)
 
-        # ३. FFMPEG मार्फत Image लाई जुम गर्ने र त्यसमाथि Transparent Text टाँस्ने
-        clip_path = f"work/clip_{idx}.mp4"
-        frames = clip_dur * 25
+        # ३. FFMPEG मार्फत डाउनलोड भएको भिडियोलाई ठ्याक्कै ९:१६ (768x1152) मा क्रप गर्ने र त्यसमाथि Transparent Text टाँस्ने
+        # साथै, भिडियोको लम्बाइ (clip_dur) मिलाउने
         cmd = [
-            "ffmpeg", "-y", "-loop", "1", "-i", img_path,
-            "-i", txt_overlay_path,
+            "ffmpeg", "-y", "-i", raw_vid_path, "-i", txt_overlay_path,
             "-filter_complex", 
-            f"[0:v]scale=1536:2304,zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=768x1152:fps=25[bg];[bg][1:v]overlay=0:0[vout]",
+            # भिडियोलाई 768x1152 मा Scale र Crop गर्ने (सेन्टरबाट), अनि टेक्स्ट ओभरले गर्ने
+            f"[0:v]scale=768:1152:force_original_aspect_ratio=increase,crop=768:1152,setsar=1[bg];[bg][1:v]overlay=0:0[vout]",
             "-map", "[vout]", "-t", str(clip_dur), "-c:v", "libx264", "-preset", "fast", clip_path
         ]
         subprocess.run(cmd, check=True)
@@ -116,11 +162,10 @@ try:
     merged_video = "work/merged.mp4"
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "work/concat.txt", "-c", "copy", merged_video], check=True)
 
-    # ५. Background Music (BGM) छान्ने लजिकलाई लचिलो (Flexible) बनाइएको छ
+    # ५. Background Music (BGM)
     final_output = "work/final_output.mp4"
     bg_music_file = "work/bgm.mp3"
     
-    # Check for keywords more broadly
     if any(word in topic for word in ["sad", "cry", "heart", "hurt", "दुख", "रुवाउने", "pain", "lonely"]):
         music_url = "https://cdn.pixabay.com/download/audio/2022/05/16/audio_03d9178bf7.mp3"
     elif any(word in topic for word in ["love", "romantic", "माया", "प्रेम", "couple", "kiss", "romance"]):
@@ -128,7 +173,6 @@ try:
     elif any(word in topic for word in ["motivat", "success", "प्रेरणा", "सफलता", "inspire", "goal", "dream"]):
         music_url = "https://cdn.pixabay.com/download/audio/2021/08/09/audio_82c5e533c6.mp3"
     else:
-        # Default fallback music (Ambient Cinematic) instead of silent
         music_url = "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8b824eb87.mp3"
         
     bgm_downloaded = False
