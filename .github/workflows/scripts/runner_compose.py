@@ -34,70 +34,69 @@ try:
 
     for idx, sc in enumerate(scenes):
         prompt = sc.get("image_prompt", topic)
-        # भिडियोको लागि टेक्स्ट तान्ने (narration वा subtitle जुन उपलब्ध छ)
         overlay_text = sc.get("subtitle", "") or sc.get("narration", "")
         img_path = f"work/scene_{idx}.jpg"
+        txt_overlay_path = f"work/text_overlay_{idx}.png"
 
-        # १. AI Scene Image डाउनलोड
+        # १. AI Image डाउनलोड गर्ने (यसमा कुनै टेक्स्ट लेखिँदैन)
         img_downloaded = False
         try:
-            url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=768&height=1152&nologo=true&seed={int(time.time())+idx}"
+            url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=768&height=1152&nologo=true&model=flux&seed={int(time.time())+idx}"
             r = requests.get(url, headers={"User-Agent": req_headers["User-Agent"]}, timeout=45)
             if r.status_code == 200 and len(r.content) > 1000:
                 with open(img_path, "wb") as f:
                     f.write(r.content)
                 img_downloaded = True
         except Exception as e:
-            print(f"Pollinations warning: {e}")
+            pass
 
         if not img_downloaded:
             fallback_img = Image.new("RGB", (768, 1152), color=(20, 28, 48))
             fallback_img.save(img_path)
 
-        # २. Center Overlay Text (TikTok / Reels Style)
-        img = Image.open(img_path).convert("RGB").resize((768, 1152))
-        
-        # टेक्स्टलाई प्रष्ट देखाउन भिडियोमा हल्का कालो (Dark Tint) तह राख्ने
-        tint = Image.new('RGBA', img.size, (0, 0, 0, 110))
-        img = Image.alpha_composite(img.convert('RGBA'), tint).convert('RGB')
-        draw = ImageDraw.Draw(img)
+        # २. पारदर्शी (Transparent PNG) लेयरमा टेक्स्ट लेख्ने ताकि भिडियो हल्लिदा टेक्स्ट स्थिर (Static) रहोस्
+        txt_img = Image.new('RGBA', (768, 1152), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(txt_img)
 
         try:
-            # अङ्ग्रेजी, नेपाली, र हिन्दी तीनवटै सपोर्ट गर्ने फन्ट
-            font = ImageFont.truetype("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf", 55)
+            font = ImageFont.truetype("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf", 52)
         except Exception:
             font = ImageFont.load_default()
 
         if overlay_text:
             lines = textwrap.wrap(overlay_text, width=22)
             line_height = 75
-            # भिडियोको ठ्याक्कै बीचमा (Center) टेक्स्ट राख्ने
+            # भिडियोको ठ्याक्कै बिचमा (Center)
             y_text = (1152 - (len(lines) * line_height)) // 2
+
+            # पढ्न सजिलो होस् भनेर टेक्स्टको पछाडि हल्का कालो ब्याकग्राउन्ड बक्स
+            draw.rectangle([(20, y_text - 30), (748, y_text + (len(lines) * line_height) + 30)], fill=(0, 0, 0, 150))
 
             for line in lines:
                 bbox = font.getbbox(line)
                 line_width = bbox[2] - bbox[0]
                 x_text = (768 - line_width) // 2
 
-                # टेक्स्टको पछाडि कालो छाया (Drop Shadow) ताकि जुनसुकै ब्याकग्राउन्डमा प्रष्ट देखियोस्
-                for dx in [-3, 0, 3]:
-                    for dy in [-3, 0, 3]:
+                # छाया (Shadow)
+                for dx in [-2, 0, 2]:
+                    for dy in [-2, 0, 2]:
                         draw.text((x_text+dx, y_text+dy), line, font=font, fill="black")
-                
                 # मुख्य सेतो टेक्स्ट
                 draw.text((x_text, y_text), line, font=font, fill="#ffffff")
                 y_text += line_height
                 
-        img.save(img_path)
+        txt_img.save(txt_overlay_path)
 
-        # ३. Cinematic Motion (Real Video Feel)
+        # ३. FFMPEG मार्फत Image लाई जुम गर्ने र त्यसमाथि Transparent Text टाँस्ने
         clip_path = f"work/clip_{idx}.mp4"
         frames = clip_dur * 25
-        # एड्भान्स जुम र प्यान इफेक्ट
         cmd = [
             "ffmpeg", "-y", "-loop", "1", "-i", img_path,
-            "-vf", f"scale=1536:2304,zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)+10':d={frames}:s=768x1152:fps=25,format=yuv420p",
-            "-t", str(clip_dur), "-c:v", "libx264", "-preset", "fast", clip_path
+            "-i", txt_overlay_path, # यो टेक्स्ट लेयर हो
+            "-filter_complex", 
+            # ब्याकग्राउन्ड जुम हुन्छ [bg], अनि स्थिर टेक्स्ट त्यसमाथि टाँसिन्छ [vout]
+            f"[0:v]scale=1536:2304,zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=768x1152:fps=25[bg];[bg][1:v]overlay=0:0[vout]",
+            "-map", "[vout]", "-t", str(clip_dur), "-c:v", "libx264", "-preset", "fast", clip_path
         ]
         subprocess.run(cmd, check=True)
         scene_clips.append(clip_path)
@@ -110,25 +109,26 @@ try:
     merged_video = "work/merged.mp4"
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "work/concat.txt", "-c", "copy", merged_video], check=True)
 
-    # ५. Background Music (BGM) & Voiceover
+    # ५. वास्तविक Background Music डाउनलोड (Pink Noise हटाइयो)
     final_output = "work/final_output.mp4"
     bg_music_file = "work/bgm.mp3"
     
-    # Topic अनुसार Background Music छान्ने
     if any(word in topic for word in ["sad", "cry", "heart", "hurt", "दुख", "रुवाउने"]):
-        music_url = "https://cdn.pixabay.com/download/audio/2022/05/16/audio_03d9178bf7.mp3" # Sad Emotional
+        music_url = "https://cdn.pixabay.com/download/audio/2022/05/16/audio_03d9178bf7.mp3"
     elif any(word in topic for word in ["love", "romantic", "माया", "प्रेम"]):
-        music_url = "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3" # Romantic
+        music_url = "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3"
     elif any(word in topic for word in ["motivat", "success", "प्रेरणा", "सफलता"]):
-        music_url = "https://cdn.pixabay.com/download/audio/2021/08/09/audio_82c5e533c6.mp3" # Motivational
+        music_url = "https://cdn.pixabay.com/download/audio/2021/08/09/audio_82c5e533c6.mp3"
     else:
-        music_url = "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8b824eb87.mp3" # Ambient Cinematic
+        music_url = "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8b824eb87.mp3"
         
+    bgm_downloaded = False
     try:
         r_music = requests.get(music_url, headers=req_headers, timeout=20)
         if r_music.status_code == 200:
             with open(bg_music_file, "wb") as f:
                 f.write(r_music.content)
+            bgm_downloaded = True
     except:
         pass
 
@@ -140,8 +140,7 @@ try:
         audio_file = "work/vo.mp3"
         subprocess.run(["edge-tts", "--voice", v_name, "--text", full_narration, "--write-media", audio_file], check=True)
         
-        if os.path.exists(bg_music_file):
-            # Voiceover र BGM दुवै मिक्स गर्ने (BGM को भोल्युम घटाएर)
+        if bgm_downloaded:
             subprocess.run([
                 "ffmpeg", "-y", "-i", merged_video, "-i", audio_file, "-i", bg_music_file,
                 "-filter_complex", "[1:a]volume=1.0[v];[2:a]volume=0.15[b];[v][b]amix=inputs=2:duration=first:dropout_transition=2[a]",
@@ -150,12 +149,13 @@ try:
         else:
             subprocess.run(["ffmpeg", "-y", "-i", merged_video, "-i", audio_file, "-c:v", "copy", "-c:a", "aac", "-shortest", final_output], check=True)
     else:
-        if os.path.exists(bg_music_file):
+        if bgm_downloaded:
             subprocess.run(["ffmpeg", "-y", "-i", merged_video, "-i", bg_music_file, "-c:v", "copy", "-c:a", "aac", "-shortest", final_output], check=True)
         else:
-            subprocess.run(["ffmpeg", "-y", "-i", merged_video, "-f", "lavfi", "-i", "anoisesrc=d=30:c=pink:r=44100:a=0.02", "-c:v", "copy", "-c:a", "aac", "-shortest", final_output], check=True)
+            # म्युजिक डाउनलोड नभए शान्त (Silent) अडियो राख्ने, Pink Noise होइन
+            subprocess.run(["ffmpeg", "-y", "-i", merged_video, "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-c:v", "copy", "-c:a", "aac", "-shortest", final_output], check=True)
 
-    # ६. Webhook मार्फत सुरक्षित अपलोड
+    # ६. Webhook अपलोड
     with open(final_output, "rb") as vf:
         res = requests.post(
             callback_url,
@@ -164,7 +164,6 @@ try:
             files={"video": (f"{job_id}.mp4", vf, "video/mp4")},
             timeout=120
         )
-        print("Webhook Upload Response:", res.status_code, res.text)
         res.raise_for_status()
 
 except Exception as e:
