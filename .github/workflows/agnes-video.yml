@@ -34,4 +34,4 @@ jobs:
         env:
           JOB_PAYLOAD: ${{ github.event.inputs.job_payload }}
           WEBHOOK_SECRET: ${{ secrets.AGNES_WEBHOOK_SECRET }}
-        run: python scripts/runner_compose.py
+        run: python .github/workflows/scripts/runner_compose.py
