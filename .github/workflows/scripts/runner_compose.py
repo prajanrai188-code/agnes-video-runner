@@ -21,6 +21,17 @@ req_headers = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0 Safari/537.36"
 }
 
+# 1. Download a reliable Devanagari font directly if it's missing (To fix Box-Box issue)
+font_path = "work/NotoSansDevanagari.ttf"
+if not os.path.exists(font_path):
+    font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansDevanagari/NotoSansDevanagari-Bold.ttf"
+    try:
+        font_res = requests.get(font_url, timeout=10)
+        with open(font_path, "wb") as f:
+            f.write(font_res.content)
+    except:
+        pass
+
 try:
     if not scenes:
         scenes = [
@@ -38,7 +49,7 @@ try:
         img_path = f"work/scene_{idx}.jpg"
         txt_overlay_path = f"work/text_overlay_{idx}.png"
 
-        # १. AI Image डाउनलोड गर्ने (यसमा कुनै टेक्स्ट लेखिँदैन)
+        # १. AI Image डाउनलोड गर्ने
         img_downloaded = False
         try:
             url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=768&height=1152&nologo=true&model=flux&seed={int(time.time())+idx}"
@@ -54,22 +65,21 @@ try:
             fallback_img = Image.new("RGB", (768, 1152), color=(20, 28, 48))
             fallback_img.save(img_path)
 
-        # २. पारदर्शी (Transparent PNG) लेयरमा टेक्स्ट लेख्ने ताकि भिडियो हल्लिदा टेक्स्ट स्थिर (Static) रहोस्
+        # २. पारदर्शी (Transparent PNG) लेयरमा टेक्स्ट लेख्ने
         txt_img = Image.new('RGBA', (768, 1152), (0, 0, 0, 0))
         draw = ImageDraw.Draw(txt_img)
 
         try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/noto/NotoSansDevanagari-Bold.ttf", 52)
+            # Use the downloaded Devanagari font
+            font = ImageFont.truetype(font_path, 52)
         except Exception:
             font = ImageFont.load_default()
 
         if overlay_text:
             lines = textwrap.wrap(overlay_text, width=22)
             line_height = 75
-            # भिडियोको ठ्याक्कै बिचमा (Center)
             y_text = (1152 - (len(lines) * line_height)) // 2
 
-            # पढ्न सजिलो होस् भनेर टेक्स्टको पछाडि हल्का कालो ब्याकग्राउन्ड बक्स
             draw.rectangle([(20, y_text - 30), (748, y_text + (len(lines) * line_height) + 30)], fill=(0, 0, 0, 150))
 
             for line in lines:
@@ -77,11 +87,9 @@ try:
                 line_width = bbox[2] - bbox[0]
                 x_text = (768 - line_width) // 2
 
-                # छाया (Shadow)
                 for dx in [-2, 0, 2]:
                     for dy in [-2, 0, 2]:
                         draw.text((x_text+dx, y_text+dy), line, font=font, fill="black")
-                # मुख्य सेतो टेक्स्ट
                 draw.text((x_text, y_text), line, font=font, fill="#ffffff")
                 y_text += line_height
                 
@@ -92,9 +100,8 @@ try:
         frames = clip_dur * 25
         cmd = [
             "ffmpeg", "-y", "-loop", "1", "-i", img_path,
-            "-i", txt_overlay_path, # यो टेक्स्ट लेयर हो
+            "-i", txt_overlay_path,
             "-filter_complex", 
-            # ब्याकग्राउन्ड जुम हुन्छ [bg], अनि स्थिर टेक्स्ट त्यसमाथि टाँसिन्छ [vout]
             f"[0:v]scale=1536:2304,zoompan=z='min(zoom+0.0015,1.3)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s=768x1152:fps=25[bg];[bg][1:v]overlay=0:0[vout]",
             "-map", "[vout]", "-t", str(clip_dur), "-c:v", "libx264", "-preset", "fast", clip_path
         ]
@@ -109,17 +116,19 @@ try:
     merged_video = "work/merged.mp4"
     subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", "work/concat.txt", "-c", "copy", merged_video], check=True)
 
-    # ५. वास्तविक Background Music डाउनलोड (Pink Noise हटाइयो)
+    # ५. Background Music (BGM) छान्ने लजिकलाई लचिलो (Flexible) बनाइएको छ
     final_output = "work/final_output.mp4"
     bg_music_file = "work/bgm.mp3"
     
-    if any(word in topic for word in ["sad", "cry", "heart", "hurt", "दुख", "रुवाउने"]):
+    # Check for keywords more broadly
+    if any(word in topic for word in ["sad", "cry", "heart", "hurt", "दुख", "रुवाउने", "pain", "lonely"]):
         music_url = "https://cdn.pixabay.com/download/audio/2022/05/16/audio_03d9178bf7.mp3"
-    elif any(word in topic for word in ["love", "romantic", "माया", "प्रेम"]):
+    elif any(word in topic for word in ["love", "romantic", "माया", "प्रेम", "couple", "kiss", "romance"]):
         music_url = "https://cdn.pixabay.com/download/audio/2022/01/18/audio_d0a13f69d2.mp3"
-    elif any(word in topic for word in ["motivat", "success", "प्रेरणा", "सफलता"]):
+    elif any(word in topic for word in ["motivat", "success", "प्रेरणा", "सफलता", "inspire", "goal", "dream"]):
         music_url = "https://cdn.pixabay.com/download/audio/2021/08/09/audio_82c5e533c6.mp3"
     else:
+        # Default fallback music (Ambient Cinematic) instead of silent
         music_url = "https://cdn.pixabay.com/download/audio/2022/03/15/audio_c8b824eb87.mp3"
         
     bgm_downloaded = False
@@ -152,7 +161,6 @@ try:
         if bgm_downloaded:
             subprocess.run(["ffmpeg", "-y", "-i", merged_video, "-i", bg_music_file, "-c:v", "copy", "-c:a", "aac", "-shortest", final_output], check=True)
         else:
-            # म्युजिक डाउनलोड नभए शान्त (Silent) अडियो राख्ने, Pink Noise होइन
             subprocess.run(["ffmpeg", "-y", "-i", merged_video, "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-c:v", "copy", "-c:a", "aac", "-shortest", final_output], check=True)
 
     # ६. Webhook अपलोड
@@ -167,7 +175,6 @@ try:
         res.raise_for_status()
 
 except Exception as e:
-    print("Runner Error:", str(e))
     requests.post(
         callback_url,
         headers=req_headers,
