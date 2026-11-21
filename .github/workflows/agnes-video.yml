@@ -15,10 +15,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install System Dependencies (FFmpeg & Fonts)
+      - name: Install FFmpeg & Devanagari Fonts
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-core fonts-lohit-deva
+          sudo apt-get install -y ffmpeg fonts-noto-core fonts-lohit-deva fontconfig
+          fc-cache -fv
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -28,10 +29,12 @@ jobs:
       - name: Install Python Packages
         run: |
           pip install --upgrade pip
-          pip install requests pillow edge-tts
+          pip install -r requirements.txt
 
-      - name: Run Video Composer Script
+      - name: Run Stock Video Engine
         env:
           JOB_PAYLOAD: ${{ github.event.inputs.job_payload }}
           WEBHOOK_SECRET: ${{ secrets.AGNES_WEBHOOK_SECRET }}
-        run: python .github/workflows/scripts/runner_compose.py
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+        run: python scripts/runner_compose.py
