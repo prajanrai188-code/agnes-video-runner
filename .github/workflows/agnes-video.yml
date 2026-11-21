@@ -15,10 +15,10 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install FFmpeg & Devanagari Fonts
+      - name: Install FFmpeg & Devanagari Shaping Fonts
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg fonts-noto-core fonts-lohit-deva fontconfig
+          sudo apt-get install -y ffmpeg libass9 libharfbuzz0b fontconfig fonts-noto-core fonts-lohit-deva
           fc-cache -fv
 
       - name: Set up Python
