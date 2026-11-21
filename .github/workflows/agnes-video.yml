@@ -37,4 +37,4 @@ jobs:
           WEBHOOK_SECRET: ${{ secrets.AGNES_WEBHOOK_SECRET }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
-        run: python scripts/runner_compose.py
+        run: python .github/workflows/scripts/runner_compose.py
