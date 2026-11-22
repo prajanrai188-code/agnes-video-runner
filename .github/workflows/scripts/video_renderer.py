@@ -200,7 +200,7 @@ def render_final_video(
             next_stream = f"v{i}"
             # भिडियोको तल्लो-मध्य भागमा (तलबाट 280px माथि) सेन्टरमा राख्ने
             filter_chains.append(
-                f"[{cur_stream}][{i}:v]overlay=(W-w)/2:H-h-280:enable='between(t,{st:.2f},{en:.2f})'[{next_stream}]"
+                f"[{cur_stream}][{i}:v]overlay=(W-w)/2:360:enable='between(t,{st:.2f},{en:.2f})'[{next_stream}]"
             )
             cur_stream = next_stream
 
