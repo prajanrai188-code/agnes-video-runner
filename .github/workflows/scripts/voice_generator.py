@@ -175,6 +175,7 @@ def _generate_with_elevenlabs(
     api_key: str,
     voice_id: str = "",
 ) -> tuple[bool, float]:
+    """पहिले ElevenLabs v4 प्रयास गर्छ, नचले Multilingual v2 मा Fallback गर्छ"""
     key = (api_key or "").strip()
     if not key:
         return False, 0.0
@@ -185,44 +186,51 @@ def _generate_with_elevenlabs(
         "xi-api-key": key,
         "Content-Type": "application/json",
     }
-    payload = {
-        "text": text,
-        "model_id": "eleven_multilingual_v2",
-        "voice_settings": {
-            "stability": 0.48,
-            "similarity_boost": 0.80,
-            "style": 0.35,
-            "use_speaker_boost": True,
-        },
-    }
 
-    res = requests.post(url, headers=headers, json=payload, timeout=90)
-    if res.status_code != 200:
-        print(f"[ElevenLabs] Unavailable (HTTP {res.status_code}): {res.text[:200]}")
-        return False, 0.0
+    for model_id in ["eleven_v4", "eleven_multilingual_v2"]:
+        payload = {
+            "text": text,
+            "model_id": model_id,
+            "voice_settings": {
+                "stability": 0.45,
+                "similarity_boost": 0.80,
+                "style": 0.35,
+                "use_speaker_boost": True,
+            },
+        }
 
-    data = res.json()
-    audio_b64 = data.get("audio_base64")
-    if not audio_b64:
-        print("[ElevenLabs] Empty audio payload, falling back.")
-        return False, 0.0
+        res = requests.post(url, headers=headers, json=payload, timeout=90)
+        if res.status_code == 200:
+            data = res.json()
+            audio_b64 = data.get("audio_base64")
+            if not audio_b64:
+                continue
 
-    with open(audio_path, "wb") as f:
-        f.write(base64.b64decode(audio_b64))
+            with open(audio_path, "wb") as f:
+                f.write(base64.b64decode(audio_b64))
 
-    dur = _probe_duration(audio_path)
-    if dur <= 0:
-        return False, 0.0
+            dur = _probe_duration(audio_path)
+            if dur <= 0:
+                continue
 
-    alignment = data.get("normalized_alignment") or data.get("alignment") or {}
-    srt_content = _alignment_to_srt(alignment, max_words=7)
-    if srt_content.strip():
-        with open(srt_path, "w", encoding="utf-8") as f:
-            f.write(srt_content)
-    else:
-        _write_proportional_srt(text, dur, srt_path)
+            alignment = data.get("normalized_alignment") or data.get("alignment") or {}
+            srt_content = _alignment_to_srt(alignment, max_words=7)
+            if srt_content.strip():
+                with open(srt_path, "w", encoding="utf-8") as f:
+                    f.write(srt_content)
+            else:
+                _write_proportional_srt(text, dur, srt_path)
 
-    return True, dur
+            print(f"[ElevenLabs] Success with model: {model_id}")
+            return True, dur
+
+        if res.status_code in (401, 402, 429):
+            print(f"[ElevenLabs] Quota/Auth Error (HTTP {res.status_code}): {res.text[:200]}")
+            return False, 0.0
+
+        print(f"[ElevenLabs] Model '{model_id}' failed (HTTP {res.status_code}), trying next...")
+
+    return False, 0.0
 
 
 def _ensure_kokoro_files() -> tuple[str, str]:
@@ -368,7 +376,7 @@ def generate_voice_and_subtitles(
     if gender not in ("male", "female"):
         gender = "male"
 
-    # १. पहिले ElevenLabs प्रयास गर्ने
+    # १. पहिले ElevenLabs (v4 -> Multilingual v2) प्रयास गर्ने
     el_key = (elevenlabs_api_key or os.environ.get("ELEVENLABS_API_KEY", "")).strip()
     el_vid = (elevenlabs_voice_id or os.environ.get("ELEVENLABS_VOICE_ID", "")).strip()
 
