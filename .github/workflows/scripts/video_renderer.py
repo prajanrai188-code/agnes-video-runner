@@ -98,7 +98,8 @@ def parse_srt(srt_path: str) -> list[dict]:
 def render_pango_subtitle_png(text: str, out_png: str) -> bool:
     raw_png = out_png.replace(".png", "_raw.png")
     escaped = html.escape(text)
-    markup = f"<span font='Noto Sans Devanagari Bold 42' foreground='white'>{escaped}</span>"
+    # फन्ट साइज 42 बाट 50 बनाइएको (Reels/Shorts मा अझै स्पष्ट देखिने)
+    markup = f"<span font='Noto Sans Devanagari Bold 50' foreground='white'>{escaped}</span>"
 
     cmd = [
         "convert",
@@ -114,15 +115,15 @@ def render_pango_subtitle_png(text: str, out_png: str) -> bool:
         return False
 
     fg = Image.open(raw_png).convert("RGBA")
-    pad = 12
+    pad = 14
     canvas = Image.new("RGBA", (fg.width + pad * 2, fg.height + pad * 2), (0, 0, 0, 0))
 
     alpha = fg.split()[3]
     black_layer = Image.new("RGBA", fg.size, (0, 0, 0, 255))
     black_layer.putalpha(alpha)
 
-    for dx in (-4, -2, 0, 2, 4):
-        for dy in (-4, -2, 0, 2, 4):
+    for dx in (-5, -3, 0, 3, 5):
+        for dy in (-5, -3, 0, 3, 5):
             if dx != 0 or dy != 0:
                 canvas.alpha_composite(black_layer, (pad + dx, pad + dy))
 
