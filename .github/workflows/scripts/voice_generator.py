@@ -1,19 +1,26 @@
+import base64
 import os
 import re
 import subprocess
 import requests
 
-# Upgraded Male-first Voice Catalog (Edge TTS)
+# Upgraded Male-first Voice Catalog (Free Edge TTS Fallback)
 VOICE_CATALOG = {
     "ne": {"male": "ne-NP-SagarNeural", "female": "ne-NP-HemkalaNeural"},
     "hi": {"male": "en-US-BrianMultilingualNeural", "female": "en-US-EmmaMultilingualNeural"},
     "en": {"male": "en-US-BrianMultilingualNeural", "female": "en-US-EmmaMultilingualNeural"},
 }
 
-# Kokoro-82M English Voices
+# Kokoro-82M English Voices (Free English Fallback)
 KOKORO_VOICES = {
     "male": "am_michael",
     "female": "af_heart",
+}
+
+# ElevenLabs Default Voices (Adam = Male, Rachel = Female)
+ELEVENLABS_DEFAULT_VOICES = {
+    "male": "pNInz6obpgDQGcFmaJgB",
+    "female": "21m00Tcm4TlvDq8ikWAM",
 }
 
 KOKORO_MODEL_URL = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
@@ -31,7 +38,7 @@ def normalize_lang(language: str) -> str:
 
 
 def _fmt_srt_time(sec: float) -> str:
-    sec = max(0.0, sec)
+    sec = max(0.0, float(sec))
     h = int(sec // 3600)
     m = int((sec % 3600) // 60)
     s = int(sec % 60)
@@ -43,7 +50,6 @@ def _fmt_srt_time(sec: float) -> str:
 
 
 def _vtt_to_srt(vtt_text: str) -> str:
-    """यदि edge-tts ले VTT फर्म्याट दियो भने त्यसलाई सफा SRT मा रूपान्तरण गर्छ"""
     lines = vtt_text.replace("\r\n", "\n").split("\n")
     blocks = []
     cur = []
@@ -90,8 +96,136 @@ def _probe_duration(audio_path: str) -> float:
         return 0.0
 
 
+def _alignment_to_srt(alignment: dict, max_words: int = 7) -> str:
+    chars = alignment.get("characters") or []
+    starts = alignment.get("character_start_times_seconds") or []
+    ends = alignment.get("character_end_times_seconds") or []
+    n = min(len(chars), len(starts), len(ends))
+    if n == 0:
+        return ""
+
+    words = []
+    cur_word = ""
+    w_start = None
+    w_end = None
+
+    for i in range(n):
+        ch = chars[i]
+        if ch.isspace():
+            if cur_word:
+                words.append((cur_word, w_start, w_end))
+                cur_word = ""
+                w_start = None
+                w_end = None
+        else:
+            if w_start is None:
+                w_start = starts[i]
+            cur_word += ch
+            w_end = ends[i]
+
+    if cur_word:
+        words.append((cur_word, w_start, w_end))
+
+    if not words:
+        return ""
+
+    srt_blocks = []
+    idx = 1
+    buf = []
+    for w_text, st, en in words:
+        buf.append((w_text, st, en))
+        ends_sentence = w_text.endswith((".", "!", "?", "।"))
+        if len(buf) >= max_words or ends_sentence:
+            line_text = " ".join(x[0] for x in buf)
+            srt_blocks.append(
+                f"{idx}\n{_fmt_srt_time(buf[0][1])} --> {_fmt_srt_time(buf[-1][2])}\n{line_text}"
+            )
+            idx += 1
+            buf = []
+
+    if buf:
+        line_text = " ".join(x[0] for x in buf)
+        srt_blocks.append(
+            f"{idx}\n{_fmt_srt_time(buf[0][1])} --> {_fmt_srt_time(buf[-1][2])}\n{line_text}"
+        )
+
+    return "\n\n".join(srt_blocks) + "\n"
+
+
+def _write_proportional_srt(text: str, total_dur: float, srt_path: str, max_words: int = 7) -> None:
+    words = text.split()
+    if not words or total_dur <= 0:
+        return
+    chunks = [" ".join(words[i:i + max_words]) for i in range(0, len(words), max_words)]
+    per_chunk = total_dur / len(chunks)
+    blocks = []
+    for i, ch in enumerate(chunks, start=1):
+        st = (i - 1) * per_chunk
+        en = min(total_dur, i * per_chunk - 0.05)
+        blocks.append(f"{i}\n{_fmt_srt_time(st)} --> {_fmt_srt_time(en)}\n{ch}")
+    with open(srt_path, "w", encoding="utf-8") as f:
+        f.write("\n\n".join(blocks) + "\n")
+
+
+def _generate_with_elevenlabs(
+    text: str,
+    gender: str,
+    audio_path: str,
+    srt_path: str,
+    api_key: str,
+    voice_id: str = "",
+) -> tuple[bool, float]:
+    key = (api_key or "").strip()
+    if not key:
+        return False, 0.0
+
+    vid = (voice_id or "").strip() or ELEVENLABS_DEFAULT_VOICES.get(gender, ELEVENLABS_DEFAULT_VOICES["male"])
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{vid}/with-timestamps?output_format=mp3_44100_128"
+    headers = {
+        "xi-api-key": key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.48,
+            "similarity_boost": 0.80,
+            "style": 0.35,
+            "use_speaker_boost": True,
+        },
+    }
+
+    res = requests.post(url, headers=headers, json=payload, timeout=90)
+    if res.status_code != 200:
+        print(f"[ElevenLabs] Unavailable (HTTP {res.status_code}): {res.text[:200]}")
+        return False, 0.0
+
+    data = res.json()
+    audio_b64 = data.get("audio_base64")
+    if not audio_b64:
+        print("[ElevenLabs] Empty audio payload, falling back.")
+        return False, 0.0
+
+    with open(audio_path, "wb") as f:
+        f.write(base64.b64decode(audio_b64))
+
+    dur = _probe_duration(audio_path)
+    if dur <= 0:
+        return False, 0.0
+
+    alignment = data.get("normalized_alignment") or data.get("alignment") or {}
+    srt_content = _alignment_to_srt(alignment, max_words=7)
+    if srt_content.strip():
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write(srt_content)
+    else:
+        _write_proportional_srt(text, dur, srt_path)
+
+    return True, dur
+
+
 def _ensure_kokoro_files() -> tuple[str, str]:
-    """Kokoro-82M ONNX र voices फाइल ~/.cache/kokoro-onnx मा डाउनलोड/क्यास गर्छ"""
     cache_dir = os.path.expanduser("~/.cache/kokoro-onnx")
     os.makedirs(cache_dir, exist_ok=True)
     model_path = os.path.join(cache_dir, "kokoro-v1.0.onnx")
@@ -111,7 +245,6 @@ def _ensure_kokoro_files() -> tuple[str, str]:
 
 
 def _split_english_chunks(text: str, max_words: int = 10) -> list[str]:
-    """अङ्ग्रेजी टेक्स्टलाई प्राकृतिक सबटाइटल खण्डमा विभाजन गर्छ"""
     raw_sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     chunks = []
     for sent in raw_sentences:
@@ -132,7 +265,6 @@ def _generate_with_kokoro(
     audio_path: str,
     srt_path: str,
 ) -> tuple[bool, float]:
-    """Kokoro-82M बाट उच्च-गुणस्तरको English Male अडियो र Synchronized SRT बनाउँछ"""
     import numpy as np
     import soundfile as sf
     from kokoro_onnx import Kokoro
@@ -167,7 +299,6 @@ def _generate_with_kokoro(
     wav_path = audio_path.replace(".mp3", ".wav")
     sf.write(wav_path, full_audio, sample_rate)
 
-    # WAV लाई MP3 मा रूपान्तरण गर्ने
     subprocess.run(
         ["ffmpeg", "-y", "-i", wav_path, "-c:a", "libmp3lame", "-b:a", "192k", audio_path],
         check=True,
@@ -188,12 +319,10 @@ def _generate_with_edge_tts(
     audio_path: str,
     srt_path: str,
 ) -> tuple[bool, float]:
-    """Upgraded Multilingual Edge TTS बाट MP3 र Auto-SRT बनाउँछ"""
     voice_name = VOICE_CATALOG.get(lang_code, VOICE_CATALOG["ne"]).get(
         gender, VOICE_CATALOG[lang_code]["male"]
     )
 
-    # Male आवाजलाई प्राकृतिक र शान्त बनाउने ट्युनिङ
     rate = "-10%" if lang_code == "ne" else ("-8%" if lang_code == "hi" else "-6%")
     pitch = "-2Hz" if gender == "male" else "+0Hz"
 
@@ -227,12 +356,9 @@ def generate_voice_and_subtitles(
     voice_gender: str,
     audio_path: str,
     srt_path: str,
+    elevenlabs_api_key: str = "",
+    elevenlabs_voice_id: str = "",
 ) -> tuple[bool, float]:
-    """
-    - English: Kokoro-82M Male (am_michael) + Edge TTS Fallback
-    - Hindi: Multilingual Edge TTS Male (en-US-BrianMultilingualNeural)
-    - Nepali: Edge TTS Male (ne-NP-SagarNeural)
-    """
     clean_text = " ".join((text or "").split()).strip()
     if not clean_text:
         return False, 0.0
@@ -242,6 +368,21 @@ def generate_voice_and_subtitles(
     if gender not in ("male", "female"):
         gender = "male"
 
+    # १. पहिले ElevenLabs प्रयास गर्ने
+    el_key = (elevenlabs_api_key or os.environ.get("ELEVENLABS_API_KEY", "")).strip()
+    el_vid = (elevenlabs_voice_id or os.environ.get("ELEVENLABS_VOICE_ID", "")).strip()
+
+    if el_key:
+        try:
+            ok, dur = _generate_with_elevenlabs(clean_text, gender, audio_path, srt_path, el_key, el_vid)
+            if ok and dur > 0:
+                print(f"[Voice] Generated {lang_code.upper()} via ElevenLabs (voice={el_vid or ELEVENLABS_DEFAULT_VOICES[gender]})")
+                return True, dur
+            print("[Voice] ElevenLabs credits exhausted or failed -> Switching to Free Voice Engine...")
+        except Exception as e:
+            print(f"[Voice] ElevenLabs error ({e}) -> Switching to Free Voice Engine...")
+
+    # २. Free Voice Fallback (English को लागि Kokoro-82M)
     if lang_code == "en":
         try:
             ok, dur = _generate_with_kokoro(clean_text, gender, audio_path, srt_path)
@@ -251,5 +392,6 @@ def generate_voice_and_subtitles(
         except Exception as e:
             print(f"[Voice] Kokoro-82M failed, falling back to Edge TTS: {e}")
 
+    # ३. Free Voice Fallback (Nepali / Hindi / English Edge TTS)
     print(f"[Voice] Generating {lang_code.upper()} via Edge TTS ({gender})")
     return _generate_with_edge_tts(clean_text, lang_code, gender, audio_path, srt_path)
