@@ -37,6 +37,36 @@ def normalize_lang(language: str) -> str:
     return LANG_ALIASES.get((language or "ne").strip().lower(), "ne")
 
 
+def _detect_narration_tag(text: str, topic: str = "") -> str:
+    """भिडियोको थिम/भावना अनुसार ElevenLabs v4 को लागि उपयुक्त Narration ट्याग छान्छ"""
+    combined = f"{topic} {text}".lower()
+
+    mood_tags = [
+        ("[softly, emotional]", [
+            "sad", "cry", "heartbreak", "lonely", "pain", "hurt", "miss", "tears", "alone", "lost",
+            "दुख", "पीडा", "आँसु", "एक्लो", "बिछोड", "याद", "टुटेको", "रुनु", "दर्द", "तन्हा", "अकेला",
+        ]),
+        ("[warm, tender]", [
+            "love", "romantic", "heart", "couple", "forever", "soulmate", "affection", "care",
+            "माया", "प्रेम", "मुटु", "साथ", "प्यार", "मोहब्बत", "दिल", "इश्क",
+        ]),
+        ("[inspiring, confident]", [
+            "motivat", "success", "goal", "dream", "focus", "discipline", "strong", "win", "hustle", "rise",
+            "प्रेरणा", "सफलता", "लक्ष्य", "सपना", "मेहनत", "हिम्मत", "जित", "संघर्ष", "कामयाबी",
+        ]),
+        ("[mysterious, calm]", [
+            "mystery", "secret", "dark", "shadow", "ancient", "history", "story", "legend", "night",
+            "रहस्य", "अँध्यारो", "कथा", "इतिहास", "रात", "चमत्कार",
+        ]),
+    ]
+
+    for tag, keywords in mood_tags:
+        if any(k in combined for k in keywords):
+            return tag
+
+    return "[warm, calm]"
+
+
 def _fmt_srt_time(sec: float) -> str:
     sec = max(0.0, float(sec))
     h = int(sec // 3600)
@@ -133,8 +163,12 @@ def _alignment_to_srt(alignment: dict, max_words: int = 7) -> str:
     idx = 1
     buf = []
     for w_text, st, en in words:
-        buf.append((w_text, st, en))
-        ends_sentence = w_text.endswith((".", "!", "?", "।"))
+        # यदि [warm, calm] जस्ता ट्याग शब्दको रूपमा आएमा सबटाइटलमा नदेखाउने
+        clean_w = re.sub(r"\[[^\]]*\]", "", w_text).strip()
+        if not clean_w:
+            continue
+        buf.append((clean_w, st, en))
+        ends_sentence = clean_w.endswith((".", "!", "?", "।"))
         if len(buf) >= max_words or ends_sentence:
             line_text = " ".join(x[0] for x in buf)
             srt_blocks.append(
@@ -174,8 +208,9 @@ def _generate_with_elevenlabs(
     srt_path: str,
     api_key: str,
     voice_id: str = "",
+    topic: str = "",
 ) -> tuple[bool, float]:
-    """पहिले ElevenLabs v4 प्रयास गर्छ, नचले Multilingual v2 मा Fallback गर्छ"""
+    """पहिले ElevenLabs v4 (Narration ट्यागसहित) प्रयास गर्छ, नचले Multilingual v2 मा Fallback गर्छ"""
     key = (api_key or "").strip()
     if not key:
         return False, 0.0
@@ -187,15 +222,21 @@ def _generate_with_elevenlabs(
         "Content-Type": "application/json",
     }
 
+    narration_tag = _detect_narration_tag(text, topic)
+
     for model_id in ["eleven_v4", "eleven_multilingual_v2"]:
+        # v4 मा मात्र Expression Tag थप्ने (v2 ले ट्यागलाई शब्दकै रूपमा पढ्न सक्छ)
+        narration_text = f"{narration_tag} {text}" if model_id == "eleven_v4" else text
+
         payload = {
-            "text": text,
+            "text": narration_text,
             "model_id": model_id,
             "voice_settings": {
-                "stability": 0.45,
+                "stability": 0.40,
                 "similarity_boost": 0.80,
-                "style": 0.35,
+                "style": 0.50,
                 "use_speaker_boost": True,
+                "speed": 0.92,
             },
         }
 
@@ -215,13 +256,14 @@ def _generate_with_elevenlabs(
 
             alignment = data.get("normalized_alignment") or data.get("alignment") or {}
             srt_content = _alignment_to_srt(alignment, max_words=7)
+            srt_content = re.sub(r"\[[^\]]+\]\s*", "", srt_content)
             if srt_content.strip():
                 with open(srt_path, "w", encoding="utf-8") as f:
                     f.write(srt_content)
             else:
                 _write_proportional_srt(text, dur, srt_path)
 
-            print(f"[ElevenLabs] Success with model: {model_id}")
+            print(f"[ElevenLabs] Success with model={model_id}, tag={narration_tag if model_id == 'eleven_v4' else 'none'}")
             return True, dur
 
         if res.status_code in (401, 402, 429):
@@ -366,6 +408,7 @@ def generate_voice_and_subtitles(
     srt_path: str,
     elevenlabs_api_key: str = "",
     elevenlabs_voice_id: str = "",
+    topic: str = "",
 ) -> tuple[bool, float]:
     clean_text = " ".join((text or "").split()).strip()
     if not clean_text:
@@ -376,13 +419,15 @@ def generate_voice_and_subtitles(
     if gender not in ("male", "female"):
         gender = "male"
 
-    # १. पहिले ElevenLabs (v4 -> Multilingual v2) प्रयास गर्ने
+    # १. पहिले ElevenLabs (v4 Narration -> Multilingual v2) प्रयास गर्ने
     el_key = (elevenlabs_api_key or os.environ.get("ELEVENLABS_API_KEY", "")).strip()
     el_vid = (elevenlabs_voice_id or os.environ.get("ELEVENLABS_VOICE_ID", "")).strip()
 
     if el_key:
         try:
-            ok, dur = _generate_with_elevenlabs(clean_text, gender, audio_path, srt_path, el_key, el_vid)
+            ok, dur = _generate_with_elevenlabs(
+                clean_text, gender, audio_path, srt_path, el_key, el_vid, topic=topic
+            )
             if ok and dur > 0:
                 print(f"[Voice] Generated {lang_code.upper()} via ElevenLabs (voice={el_vid or ELEVENLABS_DEFAULT_VOICES[gender]})")
                 return True, dur
