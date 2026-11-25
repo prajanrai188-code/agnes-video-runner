@@ -44,6 +44,12 @@ def main():
     target_duration = int(payload.get("duration", 20))
     callback_url = payload["callback_url"]
 
+    # ElevenLabs API Key र Voice ID (लगमा नदेखियोस् भनेर mask गरिएको)
+    el_api_key = (payload.get("elevenlabs_api_key") or "").strip()
+    el_voice_id = (payload.get("elevenlabs_voice_id") or "").strip()
+    if el_api_key:
+        print(f"::add-mask::{el_api_key}")
+
     # पुरानो (voiceover='on'/'off', music='auto'/'none') र नयाँ दुवै payload सपोर्ट
     vo_flag = payload.get("voiceover", "on")
     use_voice = vo_flag is True or str(vo_flag).lower() == "on"
@@ -62,7 +68,7 @@ def main():
     os.makedirs("work", exist_ok=True)
 
     try:
-        # १. Voiceover र Auto-SRT बनाउने
+        # १. Voiceover र Auto-SRT बनाउने (पहिले ElevenLabs, क्रेडिट सकिए Free Voice)
         voice_path = "work/voice.mp3"
         srt_path = "work/subtitles.srt"
         full_narration = " ".join(
@@ -74,11 +80,17 @@ def main():
 
         if use_voice and full_narration:
             ok, audio_dur = generate_voice_and_subtitles(
-                full_narration, language, voice_gender, voice_path, srt_path
+                full_narration,
+                language,
+                voice_gender,
+                voice_path,
+                srt_path,
+                elevenlabs_api_key=el_api_key,
+                elevenlabs_voice_id=el_voice_id,
             )
             if ok:
                 actual_voice_path = voice_path
-                # भिडियोको अवधि अडियोभन्दा छोटो नहोस् (अधिकतम ३० सेकेन्ड)
+                # भिडियोको अवधि अडियोभन्दा छोटो नहोस् (अधिकतम ३५ सेकेन्ड)
                 if audio_dur > 3:
                     final_duration = min(max(audio_dur + 0.5, 10.0), 35.0)
 
