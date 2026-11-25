@@ -43,4 +43,6 @@ jobs:
           WEBHOOK_SECRET: ${{ secrets.AGNES_WEBHOOK_SECRET }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
         run: python .github/workflows/scripts/runner_compose.py
