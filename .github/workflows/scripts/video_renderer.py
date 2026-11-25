@@ -8,7 +8,6 @@ from PIL import Image
 
 
 def get_media_duration(file_path: str) -> float:
-    """ffprobe बाट अडियो वा भिडियोको वास्तविक लम्बाइ (seconds) निकाल्छ"""
     if not file_path or not os.path.exists(file_path):
         return 0.0
     probe = subprocess.run(
@@ -25,7 +24,6 @@ def get_media_duration(file_path: str) -> float:
 
 
 def pick_local_bgm(topic: str) -> str | None:
-    """assets/music/ फोल्डरबाट मुड अनुसारको रोयल्टी-फ्री MP3 छान्छ"""
     music_dir = "assets/music"
     if not os.path.isdir(music_dir):
         return None
@@ -49,7 +47,6 @@ def pick_local_bgm(topic: str) -> str | None:
 
 
 def normalize_clip(raw_path: str, out_path: str, duration: float, width: int = 1080, height: int = 1920) -> None:
-    """हरेक स्टक भिडियोलाई ठ्याक्कै 1080x1920 (9:16), 30fps, हल्का डार्क टिन्टसहित तयार पार्छ"""
     vf = (
         f"scale={width}:{height}:force_original_aspect_ratio=increase,"
         f"crop={width}:{height},setsar=1,fps=30,format=yuv420p,"
@@ -76,7 +73,6 @@ def _srt_time_to_sec(ts: str) -> float:
 
 
 def parse_srt(srt_path: str) -> list[dict]:
-    """SRT फाइलबाट (start, end, text) को लिस्ट निकाल्छ"""
     if not srt_path or not os.path.exists(srt_path):
         return []
     with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -100,7 +96,6 @@ def parse_srt(srt_path: str) -> list[dict]:
 
 
 def render_pango_subtitle_png(text: str, out_png: str) -> bool:
-    """Pango (HarfBuzz) बाट शुद्ध नेपाली/हिन्दी/English टेक्स्ट + कालो आउटलाइन भएको PNG बनाउँछ"""
     raw_png = out_png.replace(".png", "_raw.png")
     escaped = html.escape(text)
     markup = f"<span font='Noto Sans Devanagari Bold 42' foreground='white'>{escaped}</span>"
@@ -118,7 +113,6 @@ def render_pango_subtitle_png(text: str, out_png: str) -> bool:
         print(f"[Pango Render Warning]: {res.stderr}")
         return False
 
-    # सफा कालो आउटलाइन (Stroke) थप्ने
     fg = Image.open(raw_png).convert("RGBA")
     pad = 12
     canvas = Image.new("RGBA", (fg.width + pad * 2, fg.height + pad * 2), (0, 0, 0, 0))
@@ -149,7 +143,6 @@ def render_final_video(
     bgm_path: str | None = None,
     total_duration: float = 20.0,
 ) -> None:
-    # १. सबै क्लिप जोड्ने
     concat_file = "work/concat.txt"
     with open(concat_file, "w", encoding="utf-8") as f:
         for cp in clip_paths:
@@ -161,7 +154,6 @@ def render_final_video(
         check=True,
     )
 
-    # २. Voiceover को वास्तविक लम्बाइ जाँचेर फाइनल अवधि तय गर्ने (ताकि आवाज नकाटियोस्)
     has_voice = bool(voice_path and os.path.exists(voice_path))
     has_bgm = bool(bgm_path and os.path.exists(bgm_path))
 
@@ -174,7 +166,6 @@ def render_final_video(
     video_dur = get_media_duration(merged_video)
     pad_needed = max(0.0, final_dur - video_dur + 0.5)
 
-    # ३. Pango बाट शुद्ध मात्रासहित सबटाइटल PNG हरू बनाएर Overlay गर्ने
     sub_entries = parse_srt(srt_path) if srt_path else []
     rendered_subs = []
     for idx, entry in enumerate(sub_entries):
@@ -198,7 +189,7 @@ def render_final_video(
         cur_stream = "v0"
         for i, (_, st, en) in enumerate(rendered_subs, start=1):
             next_stream = f"v{i}"
-            # भिडियोको तल्लो-मध्य भागमा (तलबाट 280px माथि) सेन्टरमा राख्ने
+            # Top Safe Zone (माथिबाट 360px तल, सेन्टरमा)
             filter_chains.append(
                 f"[{cur_stream}][{i}:v]overlay=(W-w)/2:360:enable='between(t,{st:.2f},{en:.2f})'[{next_stream}]"
             )
@@ -214,7 +205,6 @@ def render_final_video(
         subprocess.run(cmd, check=True)
         video_input = subbed_video
 
-    # ४. अडियो (Voiceover + Background Music) मिक्स गर्ने
     if has_voice and has_bgm:
         cmd = [
             "ffmpeg", "-y",
