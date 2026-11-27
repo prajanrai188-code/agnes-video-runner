@@ -4,7 +4,7 @@ import os
 import random
 import re
 import subprocess
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
 def get_media_duration(file_path: str) -> float:
@@ -96,9 +96,9 @@ def parse_srt(srt_path: str) -> list[dict]:
 
 
 def render_pango_subtitle_png(text: str, out_png: str) -> bool:
+    """Pango बाट शुद्ध नेपाली/हिन्दी/English टेक्स्ट + Soft Black Glow र Dark Shadow बनाउँछ"""
     raw_png = out_png.replace(".png", "_raw.png")
     escaped = html.escape(text)
-    # फन्ट साइज 42 बाट 50 बनाइएको (Reels/Shorts मा अझै स्पष्ट देखिने)
     markup = f"<span font='Noto Sans Devanagari Bold 50' foreground='white'>{escaped}</span>"
 
     cmd = [
@@ -115,18 +115,30 @@ def render_pango_subtitle_png(text: str, out_png: str) -> bool:
         return False
 
     fg = Image.open(raw_png).convert("RGBA")
-    pad = 14
-    canvas = Image.new("RGBA", (fg.width + pad * 2, fg.height + pad * 2), (0, 0, 0, 0))
+    pad = 36  # Glow र Shadow नकाटियोस् भनेर पर्याप्त Padding
+    canvas_size = (fg.width + pad * 2, fg.height + pad * 2)
+    canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
 
+    # टेक्स्टको Alpha बाट कालो सिल्हूट बनाउने
     alpha = fg.split()[3]
-    black_layer = Image.new("RGBA", fg.size, (0, 0, 0, 255))
-    black_layer.putalpha(alpha)
+    black_text = Image.new("RGBA", fg.size, (0, 0, 0, 255))
+    black_text.putalpha(alpha)
 
-    for dx in (-5, -3, 0, 3, 5):
-        for dy in (-5, -3, 0, 3, 5):
-            if dx != 0 or dy != 0:
-                canvas.alpha_composite(black_layer, (pad + dx, pad + dy))
+    # १. Soft Black Outer Glow (चारैतिर नरम कालो आभा)
+    glow_layer = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    glow_layer.paste(black_text, (pad, pad))
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(radius=12))
+    # ग्लोलाई अलि स्पष्ट बनाउन २ पटक कम्पोजिट गर्ने
+    canvas.alpha_composite(glow_layer)
+    canvas.alpha_composite(glow_layer)
 
+    # २. Dark Drop Shadow (तल-दायाँतिर गहिरो छाया)
+    shadow_layer = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
+    shadow_layer.paste(black_text, (pad + 4, pad + 7))
+    shadow_layer = shadow_layer.filter(ImageFilter.GaussianBlur(radius=5))
+    canvas.alpha_composite(shadow_layer)
+
+    # ३. मुख्य सफा सेतो टेक्स्ट (Clean White Text)
     canvas.alpha_composite(fg, (pad, pad))
     canvas.save(out_png)
     try:
